@@ -25,34 +25,38 @@ func main() {
 		log.Fatal().Err(err).Msg("load config")
 	}
 
-	dsn := cfg.DatabaseURL
-	if dsn == "" {
-		dsn = buildDSNFromEnv()
-	}
-	if dsn == "" {
+	candidates := candidateDSNs(cfg.DatabaseURL)
+	if len(candidates) == 0 {
 		log.Fatal().Msg("DATABASE_URL is not set")
 	}
 
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		log.Fatal().Err(err).Msg("open database")
-	}
-	defer db.Close()
-
+	var db *sql.DB
 	var pingErr error
-	for i := 0; i < 30; i++ {
-		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		pingErr = db.PingContext(pctx)
-		cancel()
-		if pingErr == nil {
-			break
+	for i := 0; i < 30 && db == nil; i++ {
+		for _, dsn := range candidates {
+			cand, err := sql.Open("mysql", dsn)
+			if err != nil {
+				pingErr = err
+				continue
+			}
+			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			pingErr = cand.PingContext(pctx)
+			cancel()
+			if pingErr == nil {
+				db = cand
+				break
+			}
+			_ = cand.Close()
 		}
-		log.Warn().Err(pingErr).Msg("database not ready, retrying")
-		time.Sleep(2 * time.Second)
+		if db == nil {
+			log.Warn().Err(pingErr).Msg("database not ready, retrying")
+			time.Sleep(2 * time.Second)
+		}
 	}
-	if pingErr != nil {
+	if db == nil {
 		log.Fatal().Err(pingErr).Msg("connect database")
 	}
+	defer db.Close()
 
 	if err := model.EnsureUserSchema(ctx, db); err != nil {
 		log.Fatal().Err(err).Msg("ensure schema")
@@ -82,6 +86,54 @@ func main() {
 	if err := srv.Shutdown(shutCtx); err != nil {
 		log.Error().Err(err).Msg("graceful shutdown failed")
 	}
+}
+
+// candidateDSNs returns the distinct MySQL DSNs derivable from the
+// environment, in priority order.
+func candidateDSNs(primary string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		s = normalizeDSN(strings.TrimSpace(s))
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	add(primary)
+	add(os.Getenv("DATABASE_URL"))
+	add(os.Getenv("DB_URL"))
+	add(buildDSNFromEnv())
+	return out
+}
+
+// normalizeDSN converts URL-style DSNs (mysql://user:pass@host:port/db)
+// into the go-sql-driver format; other values are returned unchanged.
+func normalizeDSN(s string) string {
+	if !strings.Contains(s, "://") {
+		return s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return s
+	}
+	host := u.Host
+	if u.Port() == "" {
+		host += ":3306"
+	}
+	creds := ""
+	if u.User != nil {
+		creds = u.User.Username()
+		if p, ok := u.User.Password(); ok {
+			creds += ":" + p
+		}
+		creds += "@"
+	}
+	q := u.Query()
+	if q.Get("parseTime") == "" {
+		q.Set("parseTime", "true")
+	}
+	return creds + "tcp(" + host + ")/" + strings.TrimPrefix(u.Path, "/") + "?" + q.Encode()
 }
 
 // buildDSNFromEnv assembles a MySQL DSN from discrete DB_* variables.
