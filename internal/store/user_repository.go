@@ -72,6 +72,12 @@ func (r *UserRepository) Save(ctx context.Context, u *model.User) (*model.User, 
 	if u == nil {
 		return nil, errors.New("save user: entity must not be nil")
 	}
+	// Hibernate's bean-validation integration checks the entity constraints
+	// (@NotBlank on name) before persisting/merging; a violation aborts the
+	// transaction commit, which the source surfaced as a 500.
+	if err := u.Validate(); err != nil {
+		return nil, fmt.Errorf("save user: constraint violation: %w", err)
+	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
