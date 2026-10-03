@@ -110,8 +110,8 @@ func (s *userService) DeleteUser(ctx context.Context, id int) error {
 
 // UpdateUser implements UserService.
 //
-// As in the source, the id is written onto the caller's user (user.setId(id))
-// and the entity is saved with merge semantics: if no row has that id the
+// The id is applied to a copy of the caller's user (the caller's value is not
+// mutated) and that copy is saved with merge semantics: if no row has that id the
 // store inserts a new row instead of failing. No validation is performed.
 //
 // MIGRATION_NOTE: the source's @NotNull on the primitive int id was a no-op
@@ -120,8 +120,9 @@ func (s *userService) UpdateUser(ctx context.Context, id int, user *model.User) 
 	if user == nil {
 		return fmt.Errorf("update user %d: %w", id, errNilUser)
 	}
-	user.ID = id
-	if _, err := s.store.Save(ctx, user); err != nil {
+	toSave := *user
+	toSave.ID = id
+	if _, err := s.store.Save(ctx, &toSave); err != nil {
 		return fmt.Errorf("update user %d: %w", id, err)
 	}
 	return nil
