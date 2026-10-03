@@ -41,11 +41,11 @@ type UserService interface {
 	FetchUserByID(ctx context.Context, id int) (*model.User, error)
 	// DeleteUser removes the user with the given id.
 	DeleteUser(ctx context.Context, id int) error
-	// UpdateUser stores user's values under the given id.
+	// UpdateUser sets id on user and saves it (merge-style upsert).
 	UpdateUser(ctx context.Context, id int, user *model.User) error
-	// GetUserNameByName returns the user whose name equals name. It returns
-	// (nil, nil) when no user matches, just as the source returned null.
-	GetUserNameByName(ctx context.Context, name string) (*model.User, error)
+	// GetUserNameByName returns the user whose name equals name. found is
+	// false when no user matches (the source returned null).
+	GetUserNameByName(ctx context.Context, name string) (user *model.User, found bool, err error)
 }
 
 // userService is the default UserService and delegates to a UserStore.
@@ -110,32 +110,31 @@ func (s *userService) DeleteUser(ctx context.Context, id int) error {
 
 // UpdateUser implements UserService.
 //
-// It sets the id on a copy of user and saves it with merge semantics. As in
-// the source, if no row has that id the store inserts a new row with a
-// freshly allocated id instead of failing.
+// As in the source, the id is written onto the caller's user (user.setId(id))
+// and the entity is saved with merge semantics: if no row has that id the
+// store inserts a new row instead of failing. No validation is performed.
 //
-// MIGRATION_NOTE: the source mutated the caller's object (user.setId(id)).
-// Here a copy is changed, so the caller's value stays untouched.
+// MIGRATION_NOTE: the source's @NotNull on the primitive int id was a no-op
+// and is dropped.
 func (s *userService) UpdateUser(ctx context.Context, id int, user *model.User) error {
 	if user == nil {
 		return fmt.Errorf("update user %d: %w", id, errNilUser)
 	}
-	updated := *user
-	updated.ID = id
-	if _, err := s.store.Save(ctx, &updated); err != nil {
+	user.ID = id
+	if _, err := s.store.Save(ctx, user); err != nil {
 		return fmt.Errorf("update user %d: %w", id, err)
 	}
 	return nil
 }
 
 // GetUserNameByName implements UserService.
-func (s *userService) GetUserNameByName(ctx context.Context, name string) (*model.User, error) {
+func (s *userService) GetUserNameByName(ctx context.Context, name string) (*model.User, bool, error) {
 	user, ok, err := s.store.FindByName(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("get user by name: %w", err)
+		return nil, false, fmt.Errorf("get user by name: %w", err)
 	}
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
-	return user, nil
+	return user, true, nil
 }
