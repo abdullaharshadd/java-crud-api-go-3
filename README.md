@@ -47,7 +47,7 @@ Run these steps in order, starting from a fresh clone.
 ### 1. Install dependencies and build
 
 ```sh
-sh -c 'ROOT=$(dirname "$(find "$PWD" /app /workdir -maxdepth 3 -name go.mod -not -path "*/vendor/*" 2>/dev/null | head -1)"); cd "$ROOT" && MAIN=$(grep -rl --include=*.go "^package main" . | grep -v _test.go | grep -v /vendor/ | head -1 | xargs dirname) && echo "root=$ROOT main=$MAIN" && go mod tidy && go mod download && mkdir -p /app/bin && go build -o /app/bin/server "$MAIN"'
+sh -c 'ROOT=$(dirname "$(find "$PWD" /app /workdir -maxdepth 3 -name go.mod -not -path "*/vendor/*" 2>/dev/null | head -1)"); cd "$ROOT" && MAIN=$(find . -name "*.go" -not -name "*_test.go" -not -path "*/vendor/*" -exec grep -l "^package main" {} + | head -1 | xargs dirname) && echo "root=$ROOT main=$MAIN" && go mod tidy && go mod download && mkdir -p /app/bin && go build -o /app/bin/server "$MAIN"'
 ```
 
 This command does the following:
