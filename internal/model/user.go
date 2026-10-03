@@ -211,5 +211,75 @@ func EnsureUserSchema(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("ensure user schema (statement %d): %w", i+1, err)
 		}
 	}
+	return reconcileUserColumns(ctx, db)
+}
+
+// userColumnDDL lists every column the repository reads/writes with its type.
+var userColumnDDL = []struct{ name, ddl string }{
+	{UserColumnID, "INTEGER NOT NULL"},
+	{UserColumnAbout, "VARCHAR(500)"},
+	{UserColumnEmail, "VARCHAR(255)"},
+	{UserColumnName, "VARCHAR(255)"},
+	{UserColumnPassword, "VARCHAR(255)"},
+	{UserColumnRole, "VARCHAR(255)"},
+}
+
+// reconcileUserColumns makes a pre-existing `user` table (created earlier with
+// a different layout, where CREATE TABLE IF NOT EXISTS is a no-op) compatible
+// with the queries in the repository: missing columns are added and foreign
+// NOT NULL columns without a default are relaxed so inserts don't fail.
+func reconcileUserColumns(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx,
+		`SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT IS NULL, COLUMN_KEY, EXTRA, COLUMN_TYPE
+		   FROM information_schema.COLUMNS
+		  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`, UserTable)
+	if err != nil {
+		return fmt.Errorf("ensure user schema: inspect columns: %w", err)
+	}
+	type colInfo struct {
+		nullable, noDefault bool
+		key, extra, typ     string
+	}
+	existing := map[string]colInfo{}
+	for rows.Next() {
+		var name, nullable, key, extra, typ string
+		var noDefault bool
+		if err := rows.Scan(&name, &nullable, &noDefault, &key, &extra, &typ); err != nil {
+			rows.Close()
+			return fmt.Errorf("ensure user schema: scan columns: %w", err)
+		}
+		existing[strings.ToLower(name)] = colInfo{nullable == "YES", noDefault, key, extra, typ}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("ensure user schema: iterate columns: %w", err)
+	}
+	rows.Close()
+
+	known := map[string]bool{}
+	for _, c := range userColumnDDL {
+		known[c.name] = true
+		if _, ok := existing[c.name]; ok {
+			continue
+		}
+		ddl := c.ddl
+		if c.name == UserColumnID {
+			ddl = "INTEGER NULL"
+		}
+		stmt := "ALTER TABLE `" + UserTable + "` ADD COLUMN " + c.name + " " + ddl
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure user schema: add column %s: %w", c.name, err)
+		}
+	}
+	for name, ci := range existing {
+		if known[name] || ci.nullable || !ci.noDefault || ci.key == "PRI" ||
+			strings.Contains(strings.ToLower(ci.extra), "auto_increment") {
+			continue
+		}
+		stmt := "ALTER TABLE `" + UserTable + "` MODIFY COLUMN `" + name + "` " + ci.typ + " NULL"
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure user schema: relax column %s: %w", name, err)
+		}
+	}
 	return nil
 }
