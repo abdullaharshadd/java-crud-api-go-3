@@ -131,6 +131,7 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, err)
 		return
 	}
+	user.ID = id
 	writeJSON(w, http.StatusOK, user)
 }
 
